@@ -1,0 +1,799 @@
+---
+title: "Ecoli modification score analysis 16s and 23s"
+author: "Julia Brettschneider"
+date: "2026-06-13"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+
+```{r setup, include=FALSE}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(cache = FALSE)
+
+# Working directory: set to source file location
+# Data directories: 
+#.  working dir to contain the directories Ecoli16s and Ecoli23s wit the data files (unzipped)
+# True score file: working dire should contain true_scores_NanoDoc2.xlsx
+
+```
+
+
+# Section 1: Data preparation and auxiliary functions
+
+## Setting analysis windown, reading in true positions from file
+
+We also include information about about parent base and chemical group as separete columns for later use.
+
+```{r}
+truth <- readxl::read_excel("true_scores_NanoDoc2.xlsx")
+#truth <- truth %>% select(rRNA, Position)
+colnames(truth)[4] <- "Detected"
+rRNA_clean <- truth$rRNA |>
+  as.character() |> gsub("[[:space:]\u00A0]+", " ", x = _) |> trimws()
+```
+
+```{r}
+mod_groups <- data.frame(
+  Modification = c("Ψ", "m7G", "m2G", "m5C", "m4Cm", "m3U", "m62A",
+                   "m1G", "m5U", "m6A", "m3Ψ", "Gm", "D", "Cm",
+                   "ho5C", "m2A", "Um"),
+
+  parent_base_group = c("U/Ψ", "G", "G", "C", "C", "U", "A",
+                        "G", "U", "A", "U/Ψ", "G", "U", "C", "C", "A", "U"),
+  
+  chemical_group = c(
+    "pseudouridine/isomerisation",   # Ψ
+    "base methylation",             # m7G
+    "base methylation",             # m2G
+    "base methylation",             # m5C
+    "mixed base + ribose methylation", # m4Cm
+    "base methylation",             # m3U
+    "base methylation",             # m62A
+    "base methylation",             # m1G
+    "base methylation",             # m5U
+    "base methylation",             # m6A
+    "methylated pseudouridine",      # m3Ψ
+    "ribose 2'-O-methylation",       # Gm
+    "base reduction",                # D
+    "ribose 2'-O-methylation",       # Cm
+    "base hydroxylation",            # ho5C
+    "base methylation",              # m2A
+    "ribose 2'-O-methylation"        # Um
+  )
+)
+```
+
+```{r}
+mod_lookup <- data.frame(
+  Modification = c("Ψ", "m7G", "m2G", "m5C", "m4Cm", "m3U", "m62A",
+                   "m1G", "m5U", "m6A", "m3Ψ", "Gm", "D", "Cm",
+                   "ho5C", "m2A", "Um"),
+  parent_base_group = c("U/Ψ", "G", "G", "C", "C", "U", "A",
+                        "G", "U", "A", "U/Ψ", "G", "U", "C",
+                        "C", "A", "U"),
+  chemical_group = c("pseudouridine", "base methylation", "base methylation",
+                     "base methylation", "base + ribose methylation",
+                     "base methylation", "base methylation",
+                     "base methylation", "base methylation",
+                     "base methylation", "methylated pseudouridine",
+                     "ribose methylation", "base reduction",
+                     "ribose methylation", "base hydroxylation",
+                     "base methylation", "ribose methylation"),
+  stringsAsFactors = FALSE
+)
+```
+
+```{r}
+w <- 20
+
+truth <- truth %>% left_join(mod_lookup, by = "Modification")
+
+Truth_16s <- truth[rRNA_clean == "E.coli 16 s", ]
+Truth_16s$Position <- as.integer(Truth_16s$Position)
+
+Truth_23s <- truth[rRNA_clean == "E.coli 23 s", ]
+Truth_23s$Position <- as.integer(Truth_23s$Position)
+```
+
+## Compute effects by position, store separately for calibration and test
+
+```{r}
+effect_by_position <- function(DC, DT) {
+  DC_sum <- DC %>%
+    mutate(log_avg1 = log(avg1)) %>%
+    group_by(position) %>%
+    summarise(mean_cal = mean(log_avg1),
+      sd_cal = sd(log_avg1),
+      n_cal = n(), .groups = "drop")
+
+  DT_sum <- DT %>%
+    mutate(log_avg1 = log(avg1)) %>%
+    group_by(position) %>%
+    summarise(mean_test = mean(log_avg1),
+      sd_test = sd(log_avg1),
+      n_test = n(), .groups = "drop")
+
+  inner_join(DT_sum, DC_sum, by = "position") %>%
+    mutate(effect = mean_test - mean_cal,
+      se = sqrt(sd_test^2 / n_test + sd_cal^2 / n_cal),
+      z = effect / se)
+}
+```
+
+## Determine nearest true position
+
+```{r}
+nearest_true_info <- function(position, Truth) {
+  truth_positions <- Truth$Position
+  nearest_idx <- which.min(abs(truth_positions - position))
+  nearest_pos <- truth_positions[nearest_idx]
+
+  data.frame(
+    nearest_true_position = nearest_pos,
+    signed_distance_to_true = position - nearest_pos,
+    abs_distance_to_true = abs(position - nearest_pos),
+    distance_sign = sign(position - nearest_pos),
+    nearest_true_detectedLit = Truth$Detected[nearest_idx]
+  )
+}
+```
+
+
+## Data frame for relative distance and effect information
+
+```{r}
+
+# see note in Section 2.0 about the need for a shift
+
+make_mod_df <- function(numberBuckets, Filenames_calib, Filenames_test, Truth){
+
+  all_effects <- list()
+
+  shift <- 4            # see comment below
+  
+  for (k in 1:numberBuckets) {
+    DCk <- read.table(Filenames_calib[k], header = TRUE)
+    DTk <- read.table(Filenames_test[k], header = TRUE)
+
+    DCk$position <- DCk$position + shift
+    DTk$position <- DTk$position + shift
+
+    effects_k <- effect_by_position(DCk, DTk)
+    effects_k$bucket <- k
+
+    #cat("bucket", k, ":", nrow(effects_k), "rows,",
+    # length(unique(effects_k$position)), "unique positions\n")
+
+    nearest_df <- do.call(rbind,
+      lapply(effects_k$position, nearest_true_info, Truth = Truth))
+
+    all_effects[[k]] <- cbind(effects_k, nearest_df)
+  }
+
+  Dmod <- bind_rows(all_effects) %>%
+    select(bucket, position, effect, nearest_true_position,
+           signed_distance_to_true, abs_distance_to_true,
+           distance_sign, nearest_true_detectedLit)
+
+  truth_positions <- sort(unique(Truth$Position))
+
+  cluster_true_positions <- truth_positions[
+    sapply(seq_along(truth_positions), function(i) {
+      any(abs(truth_positions[-i] - truth_positions[i]) <= 5)
+    })
+  ]
+
+  Dmod$cluster_flag <- as.integer(
+    Dmod$nearest_true_position %in% cluster_true_positions
+  )
+
+  Dmod
+}
+```
+
+Shift=4 added to our positions to reflect a mismatch in the bioinformatics preprocessing between relative position of the modification in the 9-basis wide reading frame window. The modification relates to starting position with that window (i.e. 1) but should be the centre position (i.e. 5). To correct for this we need to add 4. For example, what is 17 for us should be 21.
+
+
+# Section 2: Modification effect and relative distances to nearest true site
+
+We look at effect size in each position separately:
+
+Modification effect at pos i = mean(log(test scores at pos i)) - mean(log(calibration scores at pos i))
+
+We also compute corresponding standard errors.
+
+For the signed distance, I subtract the true site from the position. (Smaller position numbers are near the 5'' end.) (Note that this is a change to earlier versions of the code!!!) 
+
+- Larger position number than the true site: positive distance
+
+- Smaller position number than the true site: negative distance
+
+Positive distances are upstream in pore-time, i.e. these positions pass through the pore earlier than the true site.
+
+To facilitate modelling we put all relevant information in one dataframe: position, nearest true position, signed distances to true position, absolute distance to true position, sign, flag for cluster membership (nearest true position is part of a cluster of true positions, i.e. other true position is at most 5 positions apart).
+
+## 2.1 16s only
+
+```{r}
+Bucketind <- c(0:5)
+numberBuckets <- length(Bucketind)
+Filenames_calib <- rep("",numberBuckets)
+Filenames_test <- rep("",numberBuckets)
+
+# Working directory is source file directory
+
+for (k in 1:numberBuckets){ 
+  Filenames_calib[k] <- 
+    paste("Ecoli16s/Ecoli_calibration_score_bucket",as.character(Bucketind[k]),".tsv",sep="")
+  Filenames_test[k] <- 
+    paste("Ecoli16s/Ecoli_test_score_bucket",as.character(Bucketind[k]),".tsv",sep="")
+} # end of for loop
+```
+
+```{r, fig.show='hold', out.width="50%"}
+Dmod_16s <- make_mod_df(numberBuckets, Filenames_calib, Filenames_test, Truth_16s)
+```
+
+## 2.2 23s only
+
+```{r}
+Bucketind <- c(0:9)
+numberBuckets <- length(Bucketind)
+Filenames_calib <- rep("",numberBuckets)
+Filenames_test <- rep("",numberBuckets)
+
+#Assumes working directory is source file directory
+for (k in 1:numberBuckets){
+  Filenames_calib[k] <- 
+    paste("Ecoli23s/calib_scores_bucket",as.character(Bucketind[k]),".tsv",sep="")
+  Filenames_test[k] <- 
+    paste("Ecoli23s/test_scores_bucket",as.character(Bucketind[k]),".tsv",sep="")
+} # end of for loop
+```
+
+```{r, fig.show='hold', out.width="50%"}
+Dmod_23s <- make_mod_df(numberBuckets, Filenames_calib, Filenames_test, Truth_23s)
+```
+
+### 2.3 Join 16s and 23s 
+
+```{r}
+Dmod_all <- bind_rows(
+  Dmod_16s %>% mutate(chromosome = "16s"),
+  Dmod_23s %>% mutate(chromosome = "23s"))
+
+#Dmod_sub <- subset(Dmod_all, abs_distance_to_true <= w)
+```
+
+
+# Section 3: Non-parametric modelling 
+
+We use scatter plot smoothing with loess.
+
+## 3.1. Global plot
+
+```{r, fig.show='hold', out.width="50%"}
+plot_global <- function(Dmod, chrName){
+  plot(Dmod$signed_distance_to_true, Dmod$effect, 
+    main=paste(chrName, "- Modification effect vs distance to true site"),  pch = 1, 
+    col = ifelse(Dmod$cluster_flag == 1, "cornflowerblue", "orange"), cex = 0.7,
+    xlab = "signed distance to nearest true position", ylab = "modification effect")
+    legend("topright", 
+           legend = c("nearest true position not\n in a modification cluster\n",
+                      "nearest true position is\n in a modification cluster"),
+    col = c("orange", "cornflowerblue"), pch = 1, bty = "n", cex = 0.7)
+}
+
+plot_global(Dmod_16s, "16s")
+plot_global(Dmod_23s, "23s")
+```
+
+
+## 3.2. Local scatter plot smoothing (loess)
+
+The modification effects are a noisy signal around 0 except for positions near true sites. Loess works locally anyway, so, we restrict it to a small window. 
+
+Decreasing the span can improve the fit but needs to be weight against the risk of overfitting. 
+
+
+### 3.3 Separately for 16s and 23s
+
+```{r}
+plot_window_loess <- function(Dsub, chrName, w, span){
+
+  cols <- ifelse(Dsub$cluster_flag == 1, "cornflowerblue", "orange")
+
+  plot(Dsub$signed_distance_to_true, Dsub$effect, type = "n", xlim = c(-w, w),
+    main = paste(chrName, "- Loess (local) with span", span),
+    xlab = "signed distance to nearest true site (position - true site)", ylab = "modification effect")
+
+  usr <- par("usr")
+  rect(xleft = -2.5, xright = 2.5, ybottom = usr[3], ytop = usr[4],
+    col = "grey95", border = NA)
+
+  points(Dsub$signed_distance_to_true, Dsub$effect,
+    col = cols, cex = 0.7, pch = 1)
+
+  legend("topright",
+    legend = c("nearest true position not\n in a modification cluster\n",
+               "nearest true position is\n in a modification cluster"),
+    col = c("orange", "cornflowerblue"), pch = 1, bty = "n", cex = 0.7)
+
+  lo <- loess(effect ~ signed_distance_to_true, data = Dsub, span = span)
+  xgrid <- seq(-w, w, length.out = 400)
+  ygrid <- predict(lo, newdata = data.frame(signed_distance_to_true = xgrid))
+
+  lines(xgrid, ygrid, lwd = 1.5, col = "mediumseagreen")
+}
+```
+
+```{r, fig.show='hold', out.width="50%"}
+Dmod_sub <- subset(Dmod_16s, abs_distance_to_true <= w)
+plot_window_loess(Dmod_sub,"16s",w,0.4)
+
+Dmod_sub <- subset(Dmod_23s, abs_distance_to_true <= w)
+plot_window_loess(Dmod_sub,"23s",w,0.4)
+```
+
+Depending on the loess parameter (span) that regulates how local the polynomial based loess algorithm fits the data points we get different shapes. Default in R is span=0.5; this does not capture what may be second bump left of the main bump but decreasing it to 0.25 does. If span is even small it can lead to overfitting.
+
+Loess is nice for exploring the shape of the dependency but a real disadvantage is that does not return a model formula. 
+
+### 3.4 Jointly for 16s and 23s 
+
+```{r}
+Dmod_all <- bind_rows(
+  Dmod_16s %>% mutate(chromosome = "16s"),
+  Dmod_23s %>% mutate(chromosome = "23s"))
+
+Dmod_sub <- subset(Dmod_all, abs_distance_to_true <= w)
+plot_window_loess(Dmod_sub,"16s & 23s",w,0.4)
+```
+
+The modification effect depends on the distance to the nearest true position. The shape of this dependency is non-linear, which is intutitive. 
+
+It is asymmetric. On the x-axis we have the signed distance, which is defined as the difference between the position and its nearest true site. Given the direction of sequencing starts with the highest positions, this implies that in the case of positive such distances the position enters the pore before the true site. 
+
+The modification effect is elevated for positions near the true site. For positions that enter the pore after the true site the effect is stronger than for the positions that enter the pore before the true site. This takes places beyond the size of the pore, which is 5 bases for this dataset.
+
+This can be interpreted that we are capturing disruption of the nanopore process, both just before a modification enters the pore, but even more during and afterwards. 
+
+
+### 3.5 Separate loess depending on modification cluster
+
+```{r}
+plot_window_loess_cluster <- function(Dsub, chrName, w, span) {
+
+  cluster_group <- ifelse(as.character(Dsub$cluster_flag) == "1",
+                          "cluster", "not cluster")
+
+  cluster_cols <- c("not cluster" = "orange",
+                    "cluster" = "cornflowerblue")
+
+  cols <- unname(cluster_cols[cluster_group])
+
+  plot(Dsub$signed_distance_to_true, Dsub$effect, type = "n", xlim = c(-w, w),
+    main = paste(chrName, "- Loess by cluster flag with span", span),
+    xlab = "signed distance to nearest true site (position - true site)",
+    ylab = "modification effect")
+
+  usr <- par("usr")
+  rect(xleft = -2.5, xright = 2.5, ybottom = usr[3], ytop = usr[4],
+    col = "grey95", border = NA)
+
+  points(Dsub$signed_distance_to_true, Dsub$effect,
+    col = cols, cex = 0.7, pch = 1)
+
+  present_groups <- names(cluster_cols)[names(cluster_cols) %in% unique(cluster_group)]
+
+  for (g in present_groups) {
+    Dg <- Dsub[cluster_group == g, ]
+
+    if (nrow(Dg) >= 5 && length(unique(Dg$signed_distance_to_true)) >= 4) {
+      lo <- loess(effect ~ signed_distance_to_true, data = Dg,
+                  span = span, degree = 1)
+
+      x_min <- max(-w, min(Dg$signed_distance_to_true, na.rm = TRUE))
+      x_max <- min(w, max(Dg$signed_distance_to_true, na.rm = TRUE))
+      xgrid <- seq(x_min, x_max, length.out = 200)
+
+      ygrid <- predict(lo, newdata = data.frame(signed_distance_to_true = xgrid))
+
+      lines(xgrid, ygrid, lwd = 1.5, col = unname(cluster_cols[g]))
+    }
+  }
+
+  legend("topright",
+    legend = present_groups,
+    col = unname(cluster_cols[present_groups]),
+    pch = 1, lwd = 1.5, bty = "n", cex = 0.8)
+}
+```
+
+```{r}
+Dmod_sub <- subset(Dmod_all, abs_distance_to_true <= w)
+plot_window_loess_cluster(Dmod_sub,"16s & 23s",w,0.4)
+```
+
+A small difference if between the clustered and not clustered positions. But that may be overfitted and overinterpreted given the small nunber of datapoint. Formal modelling may returns a significance value if tested, may do that below in conjunction with the parametric models such as GAMs (see previous work).
+
+
+# Section 4: Role of modification type
+
+Consider this for the merged dataset as otherwise not much data for each type. There are 17 types in the 36 modification sites occurring in this dataset. Psi is most frequent, many occur only once. 
+
+Hence, we need to group them. We will use parent base (A=red, C=dark yellow, G=green, T=dark violet):
+
+- A:  m6A, m62A, m2A
+
+- G:  m7G, m2G, m1G, Gm
+
+- C:  m5C, m4Cm, Cm, ho5C
+
+- U / pseudouridine: Ψ, m3Ψ, m3U, m5U, D, Um
+
+Alternatively, by chemical group. Base methylation:
+  m7G, m2G, m1G, m6A, m62A, m2A, m5C, m3U, m5U
+
+- Ribose 2'-O-methylation:  Cm, Gm, Um
+
+- Mixed base + ribose methylation: m4Cm
+
+- Pseudouridine/isomerisation: Ψ
+
+- Methylated pseudouridine: m3Ψ
+
+- Other non-methyl modifications: D, ho5C
+
+## 4.0 Prepare relevant information and auxiliary functions
+
+```{r}
+truth_grouped <- truth %>%
+  left_join(mod_lookup, by = "Modification")
+```
+
+Full base information.
+
+```{r}
+plot_window_loess_base <- function(Dsub, chrName, w, span) {
+
+  base_cols <- c("G" = "seagreen3", "C" = "orange", "A" = "firebrick3",
+    "U" = "blue", "U/Ψ" = "#4B0082", "U/psi" = "#4B0082")
+  
+  base_pch <- c("G" = 4,       # x
+              "C" = 1,       # open circle
+              "A" = 2,       # open triangle
+              "U" = 3,       # +
+              "U/Ψ" = 5,     # open diamond
+              "U/psi" = 5)
+
+  base_group <- as.character(Dsub$parent_base_group)
+  cols <- base_cols[base_group]
+  pchs <- base_pch[base_group]
+
+  plot(Dsub$signed_distance_to_true, Dsub$effect, type = "n", xlim = c(-w, w),
+    main = paste(chrName, "- Loess by parent base with span", span),
+    xlab = "signed distance to nearest true site (position - true site)",
+    ylab = "modification effect")
+
+  usr <- par("usr")
+  rect(xleft = -2.5, xright = 2.5, ybottom = usr[3], ytop = usr[4],
+    col = "grey95", border = NA)
+
+  points(Dsub$signed_distance_to_true, Dsub$effect,
+    col = cols, cex = 0.7, pch = pchs)
+
+  present_groups <- intersect(names(base_cols), unique(base_group))
+  present_groups <- present_groups[!duplicated(base_cols[present_groups])]
+
+  for (g in present_groups) {
+    Dg <- Dsub[base_group == g, ]
+
+    if (nrow(Dg) >= 5 && length(unique(Dg$signed_distance_to_true)) >= 4) {
+      lo <- loess(effect ~ signed_distance_to_true, data = Dg, span = span)
+
+      x_min <- max(-w, min(Dg$signed_distance_to_true, na.rm = TRUE))
+      x_max <- min(w, max(Dg$signed_distance_to_true, na.rm = TRUE))
+      xgrid <- seq(x_min, x_max, length.out = 200)
+
+      ygrid <- predict(lo, newdata = data.frame(signed_distance_to_true = xgrid))
+      lines(xgrid, ygrid, lwd = 1.5, col = base_cols[g])
+    }
+  }
+
+  legend("topright", legend = present_groups,
+  col = base_cols[present_groups],
+  pch = base_pch[present_groups],
+  lwd = 1.5, bty = "n", cex = 0.8)
+}
+```
+
+Reduced base information: distinguish only G or not G.
+
+```{r}
+plot_window_loess_base_onlyG <- function(Dsub, chrName, w, span) {
+
+  base_cols <- c("G" = "seagreen3", "C" = "#4B0082", "A" = "#4B0082",
+    "U" = "#4B0082", "U/Ψ" = "#4B0082", "U/psi" = "#4B0082")
+  
+  base_pch <- c("G" = 4,
+    "C" = 1,
+    "A" = 2,
+    "U" = 3,
+    "U/Ψ" = 5,
+    "U/psi" = 5)
+
+  base_group <- as.character(Dsub$parent_base_group)
+
+  plot_group <- ifelse(base_group == "G", "G", "non-G")
+  plot_cols <- c("G" = "seagreen3", "non-G" = "#4B0082")
+
+  cols <- plot_cols[plot_group]
+  pchs <- base_pch[base_group]
+
+  plot(Dsub$signed_distance_to_true, Dsub$effect, type = "n", xlim = c(-w, w),
+    main = paste(chrName, "- Loess by parent base G indicator with span", span),
+    xlab = "signed distance to nearest true site (position - true site)",
+    ylab = "modification effect")
+
+  usr <- par("usr")
+  rect(xleft = -2.5, xright = 2.5, ybottom = usr[3], ytop = usr[4],
+    col = "grey95", border = NA)
+
+  points(Dsub$signed_distance_to_true, Dsub$effect,
+    col = cols, cex = 0.7, pch = pchs)
+
+  present_groups <- intersect(c("G", "non-G"), unique(plot_group))
+
+  for (g in present_groups) {
+    Dg <- Dsub[plot_group == g, ]
+
+    if (nrow(Dg) >= 5 && length(unique(Dg$signed_distance_to_true)) >= 4) {
+      lo <- loess(effect ~ signed_distance_to_true, data = Dg, span = span)
+
+      x_min <- max(-w, min(Dg$signed_distance_to_true, na.rm = TRUE))
+      x_max <- min(w, max(Dg$signed_distance_to_true, na.rm = TRUE))
+      xgrid <- seq(x_min, x_max, length.out = 200)
+
+      ygrid <- predict(lo, newdata = data.frame(signed_distance_to_true = xgrid))
+      lines(xgrid, ygrid, lwd = 1.5, col = plot_cols[g])
+    }
+  }
+
+  legend_labels <- c(
+    "G" = "G",
+    "non-G" = "C/A/U/U/Ψ"
+  )
+
+  legend("topright",
+    legend = legend_labels[present_groups],
+    col = plot_cols[present_groups],
+    pch = c("G" = 4, "non-G" = 1)[present_groups],
+    lwd = 1.5,
+    bty = "n",
+    cex = 0.8)
+}
+```
+
+
+```{r}
+plot_window_loess_chemical <- function(Dsub, chrName, w, span) {
+
+  chem_cols <- c(
+  "pseudouridine" = "slateblue",
+  "base methylation" = "deeppink3",
+  "base + ribose methylation" = "green3",
+  "methylated pseudouridine" = "navy",
+  "ribose methylation" = "deepskyblue4",
+  "base reduction" = "chocolate4",
+  "base hydroxylation" = "orange"
+)
+
+  chem_pch <- c(
+    "pseudouridine" = 1,              # open circle
+    "base methylation" = 4,           # x
+    "base + ribose methylation" = 2,  # triangle
+    "methylated pseudouridine" = 5,   # diamond
+    "ribose methylation" = 3,         # +
+    "base reduction" = 6,             # upside-down triangle
+    "base hydroxylation" = 8          # star
+  )
+
+  chem_group <- trimws(as.character(Dsub$chemical_group))
+  cols <- unname(chem_cols[chem_group])
+  pchs <- as.integer(unname(chem_pch[chem_group]))
+
+  plot(Dsub$signed_distance_to_true, Dsub$effect, type = "n", xlim = c(-w, w),
+    main = paste(chrName, "- Loess by chemical group with span", span),
+    xlab = "signed distance to nearest true site (position - true site)",
+    ylab = "modification effect")
+
+  usr <- par("usr")
+  rect(xleft = -2.5, xright = 2.5, ybottom = usr[3], ytop = usr[4],
+    col = "grey95", border = NA)
+
+  points(Dsub$signed_distance_to_true, Dsub$effect,
+    col = cols, pch = pchs, cex = 0.7)
+
+  present_groups <- names(chem_cols)[names(chem_cols) %in% unique(chem_group)]
+  
+  for (g in present_groups) {
+  Dg <- Dsub[chem_group == g, ]
+
+  n_g <- nrow(Dg)
+  n_x <- length(unique(Dg$signed_distance_to_true))
+
+  if (n_g >= 10 && n_x >= 6) {
+    local_span <- max(span, 10 / n_g)
+
+    lo <- loess(effect ~ signed_distance_to_true,
+      data = Dg,
+      span = local_span,
+      degree = 1,
+      control = loess.control(surface = "direct")
+    )
+
+    x_min <- max(-w, min(Dg$signed_distance_to_true, na.rm = TRUE))
+    x_max <- min(w, max(Dg$signed_distance_to_true, na.rm = TRUE))
+    xgrid <- seq(x_min, x_max, length.out = 200)
+
+    ygrid <- predict(lo, newdata = data.frame(signed_distance_to_true = xgrid))
+
+    lines(xgrid, ygrid, lwd = 1.5, col = unname(chem_cols[g]))
+  }
+}
+
+  legend("topright", legend = present_groups,
+    col = unname(chem_cols[present_groups]),
+    pch = as.integer(unname(chem_pch[present_groups])),
+    lwd = 1.5, bty = "n", cex = 0.65)
+}
+```
+
+```{r}
+plot_window_loess_cluster_base_onlyG <- function(Dsub, chrName, w, span) {
+
+  cluster_group <- ifelse(as.character(Dsub$cluster_flag) == "1",
+                          "cluster", "not cluster")
+
+  cluster_cols <- c("not cluster" = "darkorange2",
+                    "cluster" = "cornflowerblue")
+
+  cols <- unname(cluster_cols[cluster_group])
+
+  base_group <- as.character(Dsub$parent_base_group)
+
+  base_shape_group <- ifelse(base_group == "G", "G", "non-G")
+
+  base_pch <- c("G" = 4, "non-G" = 1)
+
+  pchs <- unname(base_pch[base_shape_group])
+
+  plot(Dsub$signed_distance_to_true, Dsub$effect, type = "n", xlim = c(-w, w),
+    main = paste(chrName, "- Loess by cluster flag with span", span),
+    xlab = "signed distance to nearest true site (position - true site)",
+    ylab = "modification effect")
+
+  usr <- par("usr")
+  rect(xleft = -2.5, xright = 2.5, ybottom = usr[3], ytop = usr[4],
+    col = "grey95", border = NA)
+
+  points(Dsub$signed_distance_to_true, Dsub$effect,
+    col = cols, cex = 0.7, pch = pchs)
+
+    present_groups <- names(cluster_cols)[names(cluster_cols) %in% unique(cluster_group)]
+
+  for (g in present_groups) {
+    Dg <- Dsub[cluster_group == g, ]
+
+    if (nrow(Dg) >= 5 && length(unique(Dg$signed_distance_to_true)) >= 4) {
+      lo <- loess(effect ~ signed_distance_to_true, data = Dg,
+                  span = span, degree = 1)
+
+      x_min <- max(-w, min(Dg$signed_distance_to_true, na.rm = TRUE))
+      x_max <- min(w, max(Dg$signed_distance_to_true, na.rm = TRUE))
+      xgrid <- seq(x_min, x_max, length.out = 200)
+
+      ygrid <- predict(lo, newdata = data.frame(signed_distance_to_true = xgrid))
+
+      lines(xgrid, ygrid, lwd = 1.5, col = unname(cluster_cols[g]))
+    }
+  }
+
+  lg_col <- legend("topright",
+  legend = present_groups,
+  col = unname(cluster_cols[present_groups]),
+  lty = 1,
+  lwd = 2,
+  pch = NA,
+  bty = "n",
+  cex = 0.8)
+   
+  present_base_groups <- names(base_pch)[names(base_pch) %in% unique(base_shape_group)]
+
+  legend(x = lg_col$rect$left,
+    y = lg_col$rect$top - lg_col$rect$h,
+    legend = c("G", "non-G")[match(present_base_groups, c("G", "non-G"))],
+    col = "black",
+    pch = base_pch[present_base_groups],
+    bty = "n",
+    cex = 0.8)
+}
+```
+
+```{r}
+truth_join <- truth %>%
+  mutate(
+    chromosome = ifelse(grepl("16", rRNA), "16s",
+                 ifelse(grepl("23", rRNA), "23s", NA)),
+    nearest_true_position = as.numeric(Position)
+  ) %>%
+  select(chromosome, nearest_true_position,
+         Modification, parent_base_group, chemical_group) %>%
+  distinct()
+
+Dmod_all <- Dmod_all %>%
+  select(-any_of(c("Modification", "parent_base_group", "chemical_group"))) %>%
+  mutate(
+    chromosome = as.character(chromosome),
+    nearest_true_position = as.numeric(nearest_true_position)
+  ) %>%
+  left_join(truth_join, by = c("chromosome", "nearest_true_position"))
+```
+
+```{r}
+Dmod_all %>%
+  filter(is.na(parent_base_group)) %>% distinct(chromosome, nearest_true_position)
+Dmod_sub <- subset(Dmod_all, abs_distance_to_true <= w)
+```
+
+
+## 4.1 By base
+
+Distinguish all cases.
+
+```{r loess-plot_Fig2a, echo=FALSE, dev='png', fig.path='plots/'}
+plot_window_loess_base(Dmod_sub,"16s & 23s",w,0.4)
+```
+
+Distinguish only if G or not.
+
+```{r}
+plot_window_loess_base_onlyG(Dmod_sub,"16s & 23s",w,0.4)
+```
+
+## 4.2 By chemical group
+
+```{r loess-plotFig2b, echo=FALSE, dev='png', fig.path='plots/'}
+#table(Dmod_sub$chemical_group)
+plot_window_loess_chemical(Dmod_sub,"16s & 23s",w,0.4)
+```
+
+## 4.3 By a combination of cluster and base information
+
+Reuse the plots distinguishing positions where the nearest true base in within a cluster of modifications from that are isolated. In addition, distinguish if the affected base is G or not.
+
+```{r loess-plot2, echo=FALSE, dev='png', fig.path='plots/'}
+plot_window_loess_cluster_base_onlyG(Dmod_sub,"16s & 23s",w,0.4)
+```
+
+## 4.4 Numerical results 
+
+Show positions with largest values for modification effect.
+
+```{r}
+tmp <- Dmod_sub %>% filter(effect > 1.5) %>% arrange(desc(effect))
+tmp <- tmp[,c(2,3,4,5,9,10,11,12,13)]
+colnames(tmp)[3] <- "true_pos"
+colnames(tmp)[4] <- "dist"
+colnames(tmp)[5] <- "cl"
+colnames(tmp)[6] <- "chr"
+colnames(tmp)[7] <- "Mod"
+colnames(tmp)[8] <- "par_b"
+tmp
+```
