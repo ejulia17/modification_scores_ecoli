@@ -31,7 +31,9 @@ The modification effect scores this repository were generated from read level sc
 
 The read level data files are not licensed under the MIT License. This repository does not grant permission for reuse, redistribution, or modification of those files beyond what is permitted by law or by the original rights holder(s).
 
-Anyone wishing to reuse, redistribute, or modify the score/data files should seek permission from the original creator(s) or rights holder(s).
+Likewise, we include here the true modification information from a published paper to enable reproducing our analyses and figures. They can be found in Ueda, H., Dasgupta, B. and Yu, B.Y., 2023. RNA modification detection using Nanopore direct RNA sequencing and nanoDoc2. In Nanopore Sequencing: Methods and Protocols (pp. 299-319). New York, NY: Springer US. 
+
+Anyone wishing to reuse, redistribute, or modify any of these files should seek permission from the original creator(s) or rights holder(s).
 
 ## Running the code
 
