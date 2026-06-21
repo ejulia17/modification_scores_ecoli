@@ -27,9 +27,9 @@ The analyses in this repo compare modification-effect scores across positions re
 
 ## Data
 
-The score/data files in this repository were generated from raw data by another contributor or contributors. They are included here to support reproducibility of the analyses and figures.
+The modification effect scores this repository were generated from read level scores obtained by methods introduced in the above mentioned preprint, by another contributor or contributors. The read level data files are too big to be included in a GibHub repo but can be make available to support reproducibility of the analyses and figures.
 
-The score/data files are not licensed under the MIT License. This repository does not grant permission for reuse, redistribution, or modification of those files beyond what is permitted by law or by the original rights holder(s).
+The read level data files are not licensed under the MIT License. This repository does not grant permission for reuse, redistribution, or modification of those files beyond what is permitted by law or by the original rights holder(s).
 
 Anyone wishing to reuse, redistribute, or modify the score/data files should seek permission from the original creator(s) or rights holder(s).
 
