@@ -30,9 +30,9 @@ SOFTWARE.
 
 ## Score/data files
 
-The score/data files in this repository were generated from raw data by another contributor or contributors and are included here to support reproducibility of the analyses and figures.
+The code supports reproducibility of the analyses and figures. 
 
-These score/data files are not licensed under the MIT License above. No additional licence is granted by this repository for reuse, redistribution, or modification of those files beyond what is permitted by law or by the original rights holder(s).
+The score/data files the are required to run this code were generated from raw data by other contributors. These files are not licensed under the MIT License above. No additional licence is granted by this repository for reuse, redistribution, or modification of those files beyond what is permitted by law or by the original rights holder(s).
 
 Anyone wishing to reuse, redistribute, or modify the score/data files should seek permission from the original creator(s) or rights holder(s).
 
