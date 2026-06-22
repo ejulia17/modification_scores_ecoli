@@ -36,6 +36,8 @@ The score/data files the are required to run this code were generated from raw d
 
 Anyone wishing to reuse, redistribute, or modify the score/data files should seek permission from the original creator(s) or rights holder(s).
 
+The table with known modification sites in the data directory is also not part of this licence. It is part of a publication by Ueda, H., Dasgupta, B. & Yu, B.-y. Rna modification detection using nanopore direct RNA sequencing and nanodoc2. In Nanopore Sequencing: Methods and Protocols, 299–319 (Springer, 2023). 
+
 ## Citation
 
 Suggested citation for this repository:
